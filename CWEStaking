@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract CWEStaking is Ownable, ReentrancyGuard {
+    IERC20 public cweToken;
+    
+    struct StakeInfo {
+        uint256 amount;
+        uint256 startTime;
+        uint256 lockDuration;
+    }
+
+    mapping(address => StakeInfo) public stakes;
+    uint256 public rewardRate = 5; // Default 5% annual rewards
+    uint256 public earlyUnstakePenalty = 10; // 10% penalty for early unstaking
+    uint256 public minStakeTime = 7 days; // Minimum staking period
+
+    event Staked(address indexed user, uint256 amount, uint256 duration);
+    event Unstaked(address indexed user, uint256 amount, uint256 rewards);
+    event RewardsClaimed(address indexed user, uint256 amount);
+    event RewardRateUpdated(uint256 newRate);
+    event EarlyUnstakePenaltyUpdated(uint256 newPenalty);
+    event MinStakeTimeUpdated(uint256 newTime);
+
+    constructor(address _cweToken, address initialOwner) Ownable(initialOwner) {
+        cweToken = IERC20(_cweToken);
+    }
+
+    function stake(uint256 amount, uint256 lockDuration) external nonReentrant {
+        require(amount > 0, "Cannot stake 0 CWE");
+        require(lockDuration >= minStakeTime, "Lock duration too short");
+        
+        cweToken.transferFrom(msg.sender, address(this), amount);
+        stakes[msg.sender] = StakeInfo({
+            amount: amount,
+            startTime: block.timestamp,
+            lockDuration: lockDuration
+        });
+
+        emit Staked(msg.sender, amount, lockDuration);
+    }
+
+    function unstake() external nonReentrant {
+        StakeInfo storage stakeData = stakes[msg.sender];
+        require(stakeData.amount > 0, "No CWE staked");
+
+        uint256 stakingDuration = block.timestamp - stakeData.startTime;
+        uint256 rewards = calculateRewards(msg.sender);
+        uint256 amountToReturn = stakeData.amount;
+
+        if (stakingDuration < stakeData.lockDuration) {
+            uint256 penalty = (stakeData.amount * earlyUnstakePenalty) / 100;
+            amountToReturn -= penalty;
+            cweToken.transfer(owner(), penalty); // Send penalty to treasury
+        }
+
+        cweToken.transfer(msg.sender, amountToReturn);
+        cweToken.transfer(msg.sender, rewards);
+
+        emit Unstaked(msg.sender, amountToReturn, rewards);
+        delete stakes[msg.sender];
+    }
+
+    function calculateRewards(address user) public view returns (uint256) {
+        StakeInfo memory stakeData = stakes[user];
+        uint256 timeStaked = block.timestamp - stakeData.startTime;
+        return (stakeData.amount * rewardRate * timeStaked) / (365 days * 100);
+    }
+
+    function updateRewardRate(uint256 newRate) external onlyOwner {
+        require(newRate <= 10, "Reward rate too high");
+        rewardRate = newRate;
+        emit RewardRateUpdated(newRate);
+    }
+
+    function updateEarlyUnstakePenalty(uint256 newPenalty) external onlyOwner {
+        require(newPenalty <= 50, "Penalty too high");
+        earlyUnstakePenalty = newPenalty;
+        emit EarlyUnstakePenaltyUpdated(newPenalty);
+    }
+
+    function updateMinStakeTime(uint256 newTime) external onlyOwner {
+        require(newTime <= 30 days, "Minimum stake time too long");
+        minStakeTime = newTime;
+        emit MinStakeTimeUpdated(newTime);
+    }
+}
