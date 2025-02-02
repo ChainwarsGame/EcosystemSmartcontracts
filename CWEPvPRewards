@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+interface ICWEStaking {
+    function stakes(address user) external view returns (uint256 amount, uint256 startTime, uint256 lockDuration);
+}
+
+contract CWEPvPRewards is Ownable, ReentrancyGuard {
+    IERC20 public cweToken;
+    ICWEStaking public stakingContract;
+
+    struct MatchResult {
+        address winner;
+        address loser;
+        uint256 rewardAmount;
+        bool verified;
+    }
+
+    uint256 public prizePool;
+    uint256 public burnPercentage = 5;
+    uint256 public maxDailyRewards = 1000 * 10**18; // Limit per player per day
+    mapping(address => uint256) public dailyRewards;
+    mapping(address => uint256) public lastRewardClaim;
+    mapping(bytes32 => MatchResult) public matchResults;
+
+    event MatchRecorded(address indexed winner, address indexed loser, uint256 reward);
+    event RewardsClaimed(address indexed player, uint256 amount, uint256 burned);
+    event BurnRateUpdated(uint256 newBurnRate);
+    event PrizePoolFunded(uint256 amount);
+
+    modifier onlyStakedPlayers() {
+        (uint256 stakedAmount,,) = stakingContract.stakes(msg.sender);
+        require(stakedAmount > 0, "Must stake CWE to earn rewards");
+        _;
+    }
+
+    constructor(address _cweToken, address _stakingContract, address initialOwner) Ownable(initialOwner) {
+        cweToken = IERC20(_cweToken);
+        stakingContract = ICWEStaking(_stakingContract);
+    }
+
+    function fundPrizePool(uint256 amount) external onlyOwner {
+        require(cweToken.transferFrom(msg.sender, address(this), amount), "Transfer failed");
+        prizePool += amount;
+        emit PrizePoolFunded(amount);
+    }
+
+    function recordMatch(address winner, address loser, uint256 rewardAmount, bytes32 matchId) external onlyOwner {
+        require(!matchResults[matchId].verified, "Match already recorded");
+        require(prizePool >= rewardAmount, "Insufficient prize pool");
+
+        matchResults[matchId] = MatchResult({
+            winner: winner,
+            loser: loser,
+            rewardAmount: rewardAmount,
+            verified: true
+        });
+
+        emit MatchRecorded(winner, loser, rewardAmount);
+    }
+
+    function claimRewards(bytes32 matchId) external nonReentrant onlyStakedPlayers {
+        MatchResult storage result = matchResults[matchId];
+        require(result.verified, "Match not verified");
+        require(result.winner == msg.sender, "Not the winner");
+        require(block.timestamp - lastRewardClaim[msg.sender] > 1 days, "Daily claim limit reached");
+
+        uint256 reward = result.rewardAmount;
+        require(dailyRewards[msg.sender] + reward <= maxDailyRewards, "Exceeds daily limit");
+
+        uint256 burnAmount = (reward * burnPercentage) / 100;
+        uint256 finalReward = reward - burnAmount;
+
+        prizePool -= reward;
+        dailyRewards[msg.sender] += reward;
+        lastRewardClaim[msg.sender] = block.timestamp;
+
+        cweToken.transfer(msg.sender, finalReward);
+        cweToken.transfer(address(0), burnAmount);
+
+        emit RewardsClaimed(msg.sender, finalReward, burnAmount);
+    }
+
+    function updateBurnRate(uint256 newBurnRate) external onlyOwner {
+        require(newBurnRate <= 10, "Cannot exceed 10%");
+        burnPercentage = newBurnRate;
+        emit BurnRateUpdated(newBurnRate);
+    }
+
+    function getMatchResult(bytes32 matchId) external view returns (address, address, uint256, bool) {
+        MatchResult memory result = matchResults[matchId];
+        return (result.winner, result.loser, result.rewardAmount, result.verified);
+    }
+}
