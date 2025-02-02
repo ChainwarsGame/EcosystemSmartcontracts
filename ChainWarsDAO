@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+contract ChainWarsDAO is Ownable {
+    struct Proposal {
+        string description;
+        uint256 votesFor;
+        uint256 votesAgainst;
+        uint256 deadline;
+        bool executed;
+    }
+
+    IERC20 public cweToken;
+    Proposal[] public proposals;
+    mapping(uint256 => mapping(address => bool)) public hasVoted;
+
+    event ProposalCreated(uint256 proposalId, string description);
+    event Voted(uint256 proposalId, address voter, bool support);
+    event ProposalExecuted(uint256 proposalId);
+
+    constructor(address _cweToken, address initialOwner) Ownable(initialOwner) {
+        cweToken = IERC20(_cweToken);
+    }
+
+    modifier onlyTokenHolders() {
+        require(cweToken.balanceOf(msg.sender) > 0, "Must hold CWE to participate");
+        _;
+    }
+
+    function createProposal(string memory _description) external onlyTokenHolders {
+        proposals.push(Proposal({
+            description: _description,
+            votesFor: 0,
+            votesAgainst: 0,
+            deadline: block.timestamp + 7 days,
+            executed: false
+        }));
+
+        emit ProposalCreated(proposals.length - 1, _description);
+    }
+
+    function vote(uint256 proposalId, bool support) external onlyTokenHolders {
+        require(proposalId < proposals.length, "Invalid proposal ID");
+        require(block.timestamp < proposals[proposalId].deadline, "Voting has ended");
+        require(!hasVoted[proposalId][msg.sender], "Already voted");
+
+        uint256 votingPower = cweToken.balanceOf(msg.sender);
+
+        if (support) {
+            proposals[proposalId].votesFor += votingPower;
+        } else {
+            proposals[proposalId].votesAgainst += votingPower;
+        }
+
+        hasVoted[proposalId][msg.sender] = true;
+        emit Voted(proposalId, msg.sender, support);
+    }
+
+    function executeProposal(uint256 proposalId) external onlyOwner {
+        require(proposalId < proposals.length, "Invalid proposal ID");
+        require(block.timestamp >= proposals[proposalId].deadline, "Voting period not over");
+        require(!proposals[proposalId].executed, "Proposal already executed");
+
+        proposals[proposalId].executed = true;
+        emit ProposalExecuted(proposalId);
+
+        // Proposal execution logic (to be customized based on governance parameters)
+    }
+
+    function getProposal(uint256 proposalId) external view returns (
+        string memory description, uint256 votesFor, uint256 votesAgainst, uint256 deadline, bool executed
+    ) {
+        Proposal memory p = proposals[proposalId];
+        return (p.description, p.votesFor, p.votesAgainst, p.deadline, p.executed);
+    }
+}
