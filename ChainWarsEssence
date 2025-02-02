@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
+
+contract ChainWarsEssence is ERC20, Ownable, ERC20Burnable {
+    uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** 18;
+    address public stakingContract;
+    address public gameContract;
+
+    event StakingContractSet(address stakingContract);
+    event GameContractSet(address gameContract);
+    event RewardsMinted(address indexed receiver, uint256 amount);
+
+    modifier onlyAuthorized() {
+        require(msg.sender == stakingContract || msg.sender == gameContract, "Not authorized");
+        _;
+    }
+
+    constructor(address initialOwner) ERC20("ChainWars Essence", "CWE") Ownable(initialOwner) {
+        _mint(initialOwner, 500_000_000 * 10 ** 18); // Mint 50% of supply for initial distribution
+    }
+
+    function setStakingContract(address _stakingContract) external onlyOwner {
+        stakingContract = _stakingContract;
+        emit StakingContractSet(_stakingContract);
+    }
+
+    function setGameContract(address _gameContract) external onlyOwner {
+        gameContract = _gameContract;
+        emit GameContractSet(_gameContract);
+    }
+
+    function mintRewards(address to, uint256 amount) external onlyAuthorized {
+        require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
+        _mint(to, amount);
+        emit RewardsMinted(to, amount);
+    }
+
+    function burn(uint256 amount) public override {
+        super.burn(amount);
+    }
+}
