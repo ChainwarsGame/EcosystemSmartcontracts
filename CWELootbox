@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+contract CWELootbox is ERC721URIStorage, Ownable, ReentrancyGuard {
+    IERC20 public cweToken;
+    address public treasury;
+    address public daoTreasury;
+
+    struct NFTData {
+        string uri;  // IPFS URI
+        uint256 maxSupply;
+        uint256 minted;
+    }
+
+    mapping(string => NFTData) public nftCollection; // Maps NFT ID to its metadata
+    string[] public nftPool; // List of available NFT IDs
+    uint256 public totalMinted; // Tracks total NFTs minted
+
+    uint256 public cwePrice = 100 * 10**18;
+    uint256 public ethPrice = 0.05 ether;
+    uint256 public usdcPrice = 50 * 10**6;
+
+    event LootboxOpened(address indexed user, string nftId, uint256 price, string paymentMethod);
+    event TreasuryUpdated(address newTreasury);
+    event DaoTreasuryUpdated(address newDaoTreasury);
+    event PricesUpdated(uint256 newCwePrice, uint256 newEthPrice, uint256 newUsdcPrice);
+    event NFTAdded(string nftId, uint256 maxSupply);
+
+    constructor(
+        address _cweToken,
+        address _treasury,
+        address _daoTreasury,
+        address initialOwner
+    ) ERC721("CWENFT", "CWE") Ownable(initialOwner) {
+        cweToken = IERC20(_cweToken);
+        treasury = _treasury;
+        daoTreasury = _daoTreasury;
+    }
+
+    function addNFT(string memory nftId, string memory uri, uint256 maxSupply) external onlyOwner {
+        require(nftCollection[nftId].maxSupply == 0, "NFT already exists");
+        nftCollection[nftId] = NFTData(uri, maxSupply, 0);
+        nftPool.push(nftId);
+        emit NFTAdded(nftId, maxSupply);
+    }
+
+    function openLootboxWithCWE() external nonReentrant {
+        require(cweToken.transferFrom(msg.sender, address(this), cwePrice), "Payment failed");
+        uint256 burnAmount = cwePrice / 20; // 5% burn
+        uint256 daoAmount = cwePrice / 20; // 5% to DAO
+        cweToken.transfer(address(0), burnAmount);
+        cweToken.transfer(daoTreasury, daoAmount);
+        _mintRandomNFT(msg.sender, "CWE");
+    }
+
+    function openLootboxWithETH() external payable nonReentrant {
+        require(msg.value == ethPrice, "Incorrect ETH amount");
+        payable(treasury).transfer(msg.value * 90 / 100);
+        _mintRandomNFT(msg.sender, "ETH");
+    }
+
+    function _mintRandomNFT(address user, string memory paymentMethod) internal {
+        require(nftPool.length > 0, "No NFTs available");
+        uint256 randomIndex = uint256(keccak256(abi.encodePacked(block.timestamp, msg.sender, totalMinted))) % nftPool.length;
+        string memory nftId = nftPool[randomIndex];
+
+        NFTData storage nftData = nftCollection[nftId];
+        require(nftData.minted < nftData.maxSupply, "NFT max supply reached");
+
+        nftData.minted++;
+        totalMinted++;
+
+        if (nftData.minted >= nftData.maxSupply) {
+            _removeNFTFromPool(randomIndex);
+        }
+
+        uint256 newTokenId = totalMinted;
+        _mint(user, newTokenId);
+        _setTokenURI(newTokenId, nftData.uri);
+
+        emit LootboxOpened(user, nftId, cwePrice, paymentMethod);
+    }
+
+    function _removeNFTFromPool(uint256 index) internal {
+        nftPool[index] = nftPool[nftPool.length - 1];
+        nftPool.pop();
+    }
+
+    function setPrices(uint256 _cwePrice, uint256 _ethPrice, uint256 _usdcPrice) external onlyOwner {
+        cwePrice = _cwePrice;
+        ethPrice = _ethPrice;
+        usdcPrice = _usdcPrice;
+        emit PricesUpdated(_cwePrice, _ethPrice, _usdcPrice);
+    }
+
+    function setTreasury(address _treasury) external onlyOwner {
+        treasury = _treasury;
+        emit TreasuryUpdated(_treasury);
+    }
+
+    function setDaoTreasury(address _daoTreasury) external onlyOwner {
+        daoTreasury = _daoTreasury;
+        emit DaoTreasuryUpdated(_daoTreasury);
+    }
+}
