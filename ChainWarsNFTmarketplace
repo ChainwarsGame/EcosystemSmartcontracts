@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.20;
+
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
+
+interface IChainWarsEssence is IERC20 {
+    function mint(address to, uint256 amount) external;
+    function cap() external view returns (uint256);
+}
+
+interface IChainwarsERC1155 {
+    function mint(address to, uint256 id, uint256 amount, bytes memory data) external;
+    function burn(address from, uint256 id, uint256 amount) external;
+    function maxSupply(uint256 id) external view returns (uint256);
+    function mintedSupply(uint256 id) external view returns (uint256);
+    function balanceOf(address account, uint256 id) external view returns (uint256);
+    function safeTransferFrom(address from, address to, uint256 id, uint256 amount, bytes calldata data) external;
+}
+
+contract ChainwarsMarketplace is AccessControl, IERC1155Receiver, ReentrancyGuard, Pausable {
+    struct Order {
+        uint256 amount;
+        uint256 tokenId;
+        address user;
+        uint256 status;
+        uint256 price;
+    }
+
+    uint256 private constant _LISTED = 0;
+    uint256 private constant _FULFILLED = 2;
+
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+
+    IChainWarsEssence public chainWarsEssence;
+    IChainwarsERC1155 public chainwarsERC1155;
+
+    uint256 private _feePercentage = 500; // 5% fee (in basis points)
+    address private _feeRecipient;
+
+    mapping(uint256 => Order[]) private _sellOrders; // tokenId => list of sell orders
+    uint256 private _sellOrderCounter;
+
+    event OrderCreated(uint256 indexed tokenId, uint256 amount, uint256 orderId, uint256 price);
+    event OrderFulfilled(uint256 indexed tokenId, uint256 orderId, address buyer, address seller, uint256 price);
+    event FeeUpdated(uint256 newFeePercentage, address indexed newFeeRecipient);
+    event TokensBurned(address indexed user, uint256 indexed tokenId, uint256 amount);
+
+    constructor(address governance, address feeRecipient_) {
+        require(governance != address(0) && feeRecipient_ != address(0), "Invalid addresses");
+        _grantRole(DEFAULT_ADMIN_ROLE, governance);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _feeRecipient = feeRecipient_;
+    }
+
+    function enableContracts(address essence, address erc1155) external onlyRole(ADMIN_ROLE) {
+        require(essence != address(0) && erc1155 != address(0), "Invalid addresses");
+        chainWarsEssence = IChainWarsEssence(essence);
+        chainwarsERC1155 = IChainwarsERC1155(erc1155);
+    }
+
+    function createSellOrder(uint256 tokenId, uint256 amount, uint256 price) external nonReentrant whenNotPaused {
+        require(price > 0, "Price must be greater than 0");
+        require(amount > 0, "Invalid amount");
+        require(chainwarsERC1155.balanceOf(msg.sender, tokenId) >= amount, "Insufficient balance");
+
+        chainwarsERC1155.safeTransferFrom(msg.sender, address(this), tokenId, amount, "");
+
+        _sellOrders[tokenId].push(Order({
+            amount: amount,
+            tokenId: tokenId,
+            user: msg.sender,
+            status: _LISTED,
+            price: price
+        }));
+
+        emit OrderCreated(tokenId, amount, _sellOrderCounter++, price);
+    }
+
+    function fulfillSellOrder(uint256 tokenId, uint256 orderId) external nonReentrant whenNotPaused {
+        Order storage sellOrder = _sellOrders[tokenId][orderId];
+        require(sellOrder.status == _LISTED, "Order not available");
+
+        uint256 totalCost = sellOrder.price * sellOrder.amount;
+        uint256 fee = (totalCost * _feePercentage) / 10000;
+        uint256 sellerProceeds = totalCost - fee;
+
+        require(chainWarsEssence.transferFrom(msg.sender, address(this), totalCost), "Payment failed");
+        require(chainWarsEssence.transfer(sellOrder.user, sellerProceeds), "Payment to seller failed");
+        require(chainWarsEssence.transfer(_feeRecipient, fee), "Fee transfer failed");
+
+        chainwarsERC1155.safeTransferFrom(address(this), msg.sender, tokenId, sellOrder.amount, "");
+
+        sellOrder.status = _FULFILLED;
+        emit OrderFulfilled(tokenId, orderId, msg.sender, sellOrder.user, sellOrder.price);
+    }
+
+    function burnTokens(uint256 tokenId, uint256 amount) external nonReentrant {
+        require(chainwarsERC1155.balanceOf(msg.sender, tokenId) >= amount, "Insufficient balance to burn");
+        chainwarsERC1155.burn(msg.sender, tokenId, amount);
+        emit TokensBurned(msg.sender, tokenId, amount);
+    }
+
+    function updateFeeRecipient(address newRecipient) external onlyRole(ADMIN_ROLE) {
+        require(newRecipient != address(0), "Invalid address");
+        _feeRecipient = newRecipient;
+        emit FeeUpdated(_feePercentage, newRecipient);
+    }
+
+    function updateFeePercentage(uint256 newFeePercentage) external onlyRole(ADMIN_ROLE) {
+        require(newFeePercentage <= 10000, "Fee too high");
+        _feePercentage = newFeePercentage;
+        emit FeeUpdated(newFeePercentage, _feeRecipient);
+    }
+
+    function pauseMarketplace() external onlyRole(ADMIN_ROLE) {
+        _pause();
+    }
+
+    function unpauseMarketplace() external onlyRole(ADMIN_ROLE) {
+        _unpause();
+    }
+
+    function onERC1155Received(
+        address,
+        address,
+        uint256,
+        uint256,
+        bytes calldata
+    ) external pure override returns (bytes4) {
+        return this.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    ) external pure override returns (bytes4) {
+        return this.onERC1155BatchReceived.selector;
+    }
+}
+
