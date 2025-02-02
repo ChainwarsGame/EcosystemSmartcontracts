@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import { ERC1155 } from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
+import { IERC2981 } from "@openzeppelin/contracts/interfaces/IERC2981.sol";
+
+contract ChainwarsNFT is ERC1155, Ownable, IERC2981 {
+    string public name = "ChainwarsNFT";
+    string public symbol = "CW1155";
+
+    mapping(uint256 => uint256) private _maxSupply;
+    mapping(uint256 => uint256) private _mintedSupply;
+
+    address private _royaltyRecipient;
+    uint256 private _royaltyPercentage;
+
+    event Minted(address indexed to, uint256 indexed id, uint256 amount);
+    event Burned(address indexed from, uint256 indexed id, uint256 amount);
+    event MaxSupplySet(uint256 indexed id, uint256 maxSupply);
+
+    constructor(
+        string memory baseURI,
+        address royaltyRecipient,
+        uint256 royaltyPercentage,
+        address initialOwner
+    ) ERC1155(baseURI) Ownable(initialOwner) {
+        require(royaltyPercentage <= 10000, "Royalty too high");
+        _royaltyRecipient = royaltyRecipient;
+        _royaltyPercentage = royaltyPercentage;
+    }
+
+    // Set max supply for a token
+    function setMaxSupply(uint256 id, uint256 maxSupplyValue) external onlyOwner {
+        require(_maxSupply[id] == 0, "Max supply already set");
+        _maxSupply[id] = maxSupplyValue;
+        emit MaxSupplySet(id, maxSupplyValue);
+    }
+
+    // Mint tokens
+    function mint(address to, uint256 id, uint256 amount, bytes memory data) external onlyOwner {
+        require(_mintedSupply[id] + amount <= _maxSupply[id], "Exceeds max supply");
+        _mintedSupply[id] += amount;
+        _mint(to, id, amount, data);
+        emit Minted(to, id, amount);
+    }
+
+    // Batch mint tokens
+    function mintBatch(address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data) external onlyOwner {
+        for (uint256 i = 0; i < ids.length; i++) {
+            require(_mintedSupply[ids[i]] + amounts[i] <= _maxSupply[ids[i]], "Exceeds max supply");
+            _mintedSupply[ids[i]] += amounts[i];
+        }
+        _mintBatch(to, ids, amounts, data);
+        emit Minted(to, ids[0], amounts[0]); // Example: Emit first ID as part of batch
+    }
+
+    // Burn tokens (only callable by crafting/leveling contracts)
+    function burn(address from, uint256 id, uint256 amount) external {
+        require(msg.sender == owner() || isApprovedForAll(from, msg.sender), "Not authorized to burn");
+        _burn(from, id, amount);
+        emit Burned(from, id, amount);
+    }
+
+    // Royalty Info (EIP-2981)
+    function royaltyInfo(uint256, uint256 salePrice) external view override returns (address, uint256) {
+        uint256 royaltyAmount = (salePrice * _royaltyPercentage) / 10000;
+        return (_royaltyRecipient, royaltyAmount);
+    }
+
+    // Update royalty information
+    function setRoyaltyInfo(address recipient, uint256 percentage) external onlyOwner {
+        require(percentage <= 10000, "Royalty too high");
+        _royaltyRecipient = recipient;
+        _royaltyPercentage = percentage;
+    }
+
+    // Max supply and minted supply getters
+    function maxSupply(uint256 id) external view returns (uint256) {
+        return _maxSupply[id];
+    }
+
+    function mintedSupply(uint256 id) external view returns (uint256) {
+        return _mintedSupply[id];
+    }
+
+    // Metadata URI
+    function uri(uint256 id) public view override returns (string memory) {
+        return string(abi.encodePacked(super.uri(id), Strings.toString(id), ".json"));
+    }
+}
